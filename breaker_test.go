@@ -3,7 +3,9 @@ package breaker
 import (
 	"errors"
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,7 +14,7 @@ import (
 
 func TestCircuitBreaker_Do(t *testing.T) {
 	cfg := Configuration{
-		FailureThreshold: 5,
+		ErrorThreshold:   5,
 		OpenDuration:     500 * time.Millisecond,
 		SuccessThreshold: 10,
 	}
@@ -36,7 +38,7 @@ func TestCircuitBreaker_Do(t *testing.T) {
 		assert.Equal(t, StateClosed, cb.GetState())
 	})
 
-	t.Run("closed cb closes after FailureThreshold errors", func(t *testing.T) {
+	t.Run("closed cb closes after ErrorThreshold errors", func(t *testing.T) {
 		t.Parallel()
 		cb := newCB(StateClosed)
 		var calls int
@@ -44,13 +46,13 @@ func TestCircuitBreaker_Do(t *testing.T) {
 			assert.Error(t, cb.Do(func() error { return errors.New("error") }))
 			calls++
 		}
-		assert.Equal(t, cfg.FailureThreshold, calls)
+		assert.Equal(t, cfg.ErrorThreshold, calls)
 	})
 
-	t.Run("closed cb only closes after FailureThreshold consecutive errors", func(t *testing.T) {
+	t.Run("closed cb only closes after ErrorThreshold consecutive errors", func(t *testing.T) {
 		t.Parallel()
 		cb := newCB(StateClosed)
-		for range cfg.FailureThreshold {
+		for range cfg.ErrorThreshold {
 			assert.Error(t, cb.Do(func() error { return errors.New("error") }))
 			assert.NoError(t, cb.Do(func() error { return nil }))
 		}
@@ -104,7 +106,7 @@ func TestCircuitBreaker_Do(t *testing.T) {
 
 func TestCircuitBreaker_Do_Throttled(t *testing.T) {
 	cfg := Configuration{
-		FailureThreshold: 1,
+		ErrorThreshold:   1,
 		OpenDuration:     500 * time.Millisecond,
 		SuccessThreshold: 10,
 		HalfOpenThrottle: 2,
@@ -139,7 +141,7 @@ func TestCircuitBreaker_Do_Throttled(t *testing.T) {
 
 func TestCircuitBreaker_Do_Custom(t *testing.T) {
 	cfg := Configuration{
-		FailureThreshold: 5,
+		ErrorThreshold:   5,
 		OpenDuration:     500 * time.Millisecond,
 		SuccessThreshold: 10,
 		ShouldOpen:       func(_ Counters) bool { return true },
@@ -148,7 +150,7 @@ func TestCircuitBreaker_Do_Custom(t *testing.T) {
 	cb := New(cfg)
 	assert.Equal(t, StateClosed.String(), cb.GetState().String())
 	_ = cb.Do(func() error { return errors.New("error") })
-	// custom ShouldOpen ignores FailureThreshold: circuit opens on first failure
+	// custom ShouldOpen ignores ErrorThreshold: circuit opens on first error
 	assert.Equal(t, StateOpen.String(), cb.GetState().String())
 	assert.Eventually(t, func() bool { return cb.GetState() == StateHalfOpen }, time.Second, 50*time.Millisecond)
 	_ = cb.Do(func() error { return nil })
@@ -158,7 +160,7 @@ func TestCircuitBreaker_Do_Custom(t *testing.T) {
 
 func TestCircuitBreaker_GetCounters(t *testing.T) {
 	cb := New(Configuration{
-		FailureThreshold: 1,
+		ErrorThreshold:   1,
 		OpenDuration:     500 * time.Millisecond,
 		SuccessThreshold: 1,
 	})
@@ -177,9 +179,88 @@ func TestCircuitBreaker_GetCounters(t *testing.T) {
 	assert.Equal(t, Counters{Calls: 1, Successes: 1, ConsecutiveSuccesses: 1}, cb.GetCounters())
 }
 
+func TestCircuitBreaker_Collect(t *testing.T) {
+	cfg := Configuration{
+		ErrorThreshold:   5,
+		OpenDuration:     500 * time.Millisecond,
+		SuccessThreshold: 5,
+		Namespace:        "foo",
+		Name:             "cb",
+	}
+	cb := New(cfg)
+
+	for range cfg.ErrorThreshold - 1 {
+		_ = cb.Do(func() error { return errors.New("error") })
+	}
+	assert.NoError(t, testutil.CollectAndCompare(cb, strings.NewReader(`
+# HELP foo_circuit_breaker_consecutive_errors consecutive errors
+# TYPE foo_circuit_breaker_consecutive_errors gauge
+foo_circuit_breaker_consecutive_errors{circuit_breaker="cb"} 4
+
+# HELP foo_circuit_breaker_consecutive_successes consecutive successes
+# TYPE foo_circuit_breaker_consecutive_successes gauge
+foo_circuit_breaker_consecutive_successes{circuit_breaker="cb"} 0
+
+# HELP foo_circuit_breaker_state state of the circuit breaker (0: closed, 1:open, 2:half-open)
+# TYPE foo_circuit_breaker_state gauge
+foo_circuit_breaker_state{circuit_breaker="cb"} 0
+`)))
+
+	// open the circuit breaker
+	_ = cb.Do(func() error { return errors.New("error") })
+	assert.NoError(t, testutil.CollectAndCompare(cb, strings.NewReader(`
+# HELP foo_circuit_breaker_consecutive_errors consecutive errors
+# TYPE foo_circuit_breaker_consecutive_errors gauge
+foo_circuit_breaker_consecutive_errors{circuit_breaker="cb"} 0
+
+# HELP foo_circuit_breaker_consecutive_successes consecutive successes
+# TYPE foo_circuit_breaker_consecutive_successes gauge
+foo_circuit_breaker_consecutive_successes{circuit_breaker="cb"} 0
+
+# HELP foo_circuit_breaker_state state of the circuit breaker (0: closed, 1:open, 2:half-open)
+# TYPE foo_circuit_breaker_state gauge
+foo_circuit_breaker_state{circuit_breaker="cb"} 1
+`)))
+
+	// wait for the circuit breaker to half-open
+	assert.Eventually(t, func() bool { return cb.GetState() == StateHalfOpen }, time.Second, 100*time.Millisecond)
+	for range cfg.SuccessThreshold - 1 {
+		_ = cb.Do(func() error { return nil })
+	}
+	assert.NoError(t, testutil.CollectAndCompare(cb, strings.NewReader(`
+# HELP foo_circuit_breaker_consecutive_errors consecutive errors
+# TYPE foo_circuit_breaker_consecutive_errors gauge
+foo_circuit_breaker_consecutive_errors{circuit_breaker="cb"} 0
+
+# HELP foo_circuit_breaker_consecutive_successes consecutive successes
+# TYPE foo_circuit_breaker_consecutive_successes gauge
+foo_circuit_breaker_consecutive_successes{circuit_breaker="cb"} 4
+
+# HELP foo_circuit_breaker_state state of the circuit breaker (0: closed, 1:open, 2:half-open)
+# TYPE foo_circuit_breaker_state gauge
+foo_circuit_breaker_state{circuit_breaker="cb"} 2
+`)))
+
+	// close the circuit breaker
+	_ = cb.Do(func() error { return nil })
+	assert.NoError(t, testutil.CollectAndCompare(cb, strings.NewReader(`
+# HELP foo_circuit_breaker_consecutive_errors consecutive errors
+# TYPE foo_circuit_breaker_consecutive_errors gauge
+foo_circuit_breaker_consecutive_errors{circuit_breaker="cb"} 0
+
+# HELP foo_circuit_breaker_consecutive_successes consecutive successes
+# TYPE foo_circuit_breaker_consecutive_successes gauge
+foo_circuit_breaker_consecutive_successes{circuit_breaker="cb"} 0
+
+# HELP foo_circuit_breaker_state state of the circuit breaker (0: closed, 1:open, 2:half-open)
+# TYPE foo_circuit_breaker_state gauge
+foo_circuit_breaker_state{circuit_breaker="cb"} 0
+`)))
+}
+
 func BenchmarkCircuitBreaker_Do(b *testing.B) {
 	cb := New(Configuration{
-		FailureThreshold: 5,
+		ErrorThreshold:   5,
 		OpenDuration:     time.Millisecond,
 		SuccessThreshold: 10,
 	})
@@ -191,7 +272,7 @@ func BenchmarkCircuitBreaker_Do(b *testing.B) {
 			})
 		}
 	})
-	b.Run("failure", func(b *testing.B) {
+	b.Run("error", func(b *testing.B) {
 		for range b.N {
 			_ = cb.Do(func() error {
 				return errors.New("error")
@@ -201,9 +282,9 @@ func BenchmarkCircuitBreaker_Do(b *testing.B) {
 }
 
 func ExampleCircuitBreaker_Do() {
-	cfg := Configuration{FailureThreshold: 2}
+	cfg := Configuration{ErrorThreshold: 2}
 	cb := New(cfg)
-	for i := range cfg.FailureThreshold + 1 {
+	for i := range cfg.ErrorThreshold + 1 {
 		err := cb.Do(func() error {
 			return errors.New("error")
 		})
