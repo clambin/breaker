@@ -1,0 +1,12 @@
+name: Test
+
+on:
+  push:
+
+jobs:
+  test:
+    uses: clambin/workflows/.github/workflows/libtest.yaml@main
+    with:
+      go-previous: "1.22"
+    secrets:
+      codecov-token: ${{ secrets.CODECOV_TOKEN }}
