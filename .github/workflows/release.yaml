@@ -15,4 +15,4 @@ jobs:
   publish:
     needs:
       - test
-    uses: clambin/workflows/.github/workflows/librelease.yaml@main
+    uses: clambin/workflows/.github/workflows/release.yaml@main
