@@ -18,6 +18,7 @@ import (
 // CircuitBreaker implements the circuit breaker design pattern.
 type CircuitBreaker struct {
 	configuration      Configuration
+	throttle           chan struct{}
 	lock               sync.Mutex
 	counters           Counters
 	state              State
@@ -35,6 +36,8 @@ type Configuration struct {
 	SuccessThreshold int
 	// HalfOpenDuration is currently not used.
 	HalfOpenDuration time.Duration
+	// HalfOpenThrottle limits the number of parallel requests while the circuit is half-open. Default is zero (no throttling).
+	HalfOpenThrottle int
 	// ShouldOpen overrides when a circuit breaker opens. If nil, the circuit breaker opens after FailureThreshold consecutive failures.
 	ShouldOpen func(Counters) bool
 	// ShouldClose overrides when a circuit breaker opens. If nil, the circuit breaker closes after SuccessThreshold consecutive successful calls.
@@ -57,6 +60,7 @@ func New(configuration Configuration) *CircuitBreaker {
 	}
 	return &CircuitBreaker{
 		configuration: configuration,
+		throttle:      make(chan struct{}, configuration.HalfOpenThrottle),
 	}
 }
 
@@ -86,8 +90,15 @@ func (c *CircuitBreaker) GetCounters() Counters {
 
 // Do executes f() in line with the circuit breaker's state. If the circuit breaker is open, Do does not call f() and returns ErrCircuitOpen.
 func (c *CircuitBreaker) Do(f func() error) error {
-	if state := c.getState(); state == StateOpen {
+	state := c.getState()
+	if state == StateOpen {
 		return ErrCircuitOpen
+	}
+
+	if state == StateHalfOpen && c.configuration.HalfOpenThrottle > 0 {
+		// simple semaphore implementation to throttle requests while half-open
+		c.throttle <- struct{}{}
+		defer func() { <-c.throttle }()
 	}
 
 	err := f()

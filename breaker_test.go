@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/stretchr/testify/assert"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -98,6 +100,41 @@ func TestCircuitBreaker_Do(t *testing.T) {
 		assert.Equal(t, StateClosed, cb.GetState())
 		assert.Equal(t, cfg.SuccessThreshold, calls)
 	})
+}
+
+func TestCircuitBreaker_Do_Throttled(t *testing.T) {
+	cfg := Configuration{
+		FailureThreshold: 1,
+		OpenDuration:     500 * time.Millisecond,
+		SuccessThreshold: 10,
+		HalfOpenThrottle: 2,
+	}
+	cb := New(cfg)
+	_ = cb.Do(func() error { return errors.New("error") })
+	assert.Eventually(t, func() bool { return cb.GetState() == StateHalfOpen }, time.Second, 100*time.Millisecond)
+
+	var wg sync.WaitGroup
+	var maxCalls atomic.Int32
+	var inflightCalls atomic.Int32
+
+	for range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = cb.Do(func() error {
+				inflight := inflightCalls.Add(1)
+				if highest := maxCalls.Load(); inflight > highest {
+					maxCalls.Store(inflight)
+				}
+				time.Sleep(100 * time.Millisecond)
+				inflightCalls.Add(-1)
+				return nil
+			})
+		}()
+	}
+
+	wg.Wait()
+	assert.Equal(t, int32(cfg.HalfOpenThrottle), maxCalls.Load())
 }
 
 func TestCircuitBreaker_Do_Custom(t *testing.T) {
