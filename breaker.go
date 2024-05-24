@@ -216,7 +216,6 @@ func (c *Counters) reset() {
 	c.Calls = 0
 	c.Successes = 0
 	c.ConsecutiveSuccesses = 0
-	c.ConsecutiveFailures = 0
 	c.Failures = 0
-	c.Successes = 0
+	c.ConsecutiveFailures = 0
 }
