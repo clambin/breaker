@@ -1,9 +1,12 @@
 package breaker
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"github.com/clambin/go-common/testutils"
 	"github.com/stretchr/testify/assert"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -175,6 +178,17 @@ func TestCircuitBreaker_GetCounters(t *testing.T) {
 	_ = cb.Do(func() error { return nil })
 	_ = cb.Do(func() error { return nil })
 	assert.Equal(t, Counters{Calls: 1, Successes: 1, ConsecutiveSuccesses: 1}, cb.GetCounters())
+}
+
+func TestCircuitBreaker_Logger(t *testing.T) {
+	var output bytes.Buffer
+	l := testutils.NewTextLogger(&output, slog.LevelDebug)
+	cb := New(Configuration{ErrorThreshold: 1, Logger: l})
+	_ = cb.Do(func() error {
+		return errors.New("error")
+	})
+	assert.Equal(t, `level=DEBUG msg="state change detected" state=open
+`, output.String())
 }
 
 func BenchmarkCircuitBreaker_Do(b *testing.B) {

@@ -165,6 +165,9 @@ func (c *CircuitBreaker) setState(state State) {
 	c.state = state
 	c.counters.reset()
 	c.metrics.onStateChange(state)
+	if c.logger != nil {
+		c.logger.Debug("state change detected", "state", c.state)
+	}
 }
 
 // State of the circuit breaker.
