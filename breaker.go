@@ -11,12 +11,10 @@ package breaker
 
 import (
 	"errors"
-	"github.com/prometheus/client_golang/prometheus"
+	"log/slog"
 	"sync"
 	"time"
 )
-
-var _ prometheus.Collector = &CircuitBreaker{}
 
 // CircuitBreaker implements the circuit breaker design pattern.
 type CircuitBreaker struct {
@@ -27,7 +25,8 @@ type CircuitBreaker struct {
 	state              State
 	openExpiration     time.Time
 	halfOpenExpiration time.Time
-	metrics
+	metrics            *Metrics
+	logger             *slog.Logger
 }
 
 // Configuration for the circuit breaker.
@@ -46,12 +45,10 @@ type Configuration struct {
 	ShouldOpen func(Counters) bool
 	// ShouldClose overrides when a circuit breaker opens. If nil, the circuit breaker closes after SuccessThreshold consecutive successful calls.
 	ShouldClose func(Counters) bool
-	// Namespace is used to generate the prometheus metric name
-	Namespace string
-	// Subsystem is used to generate the prometheus metric name
-	Subsystem string
-	// Name of the circuit breaker. Added as a label to the prometheus metric
-	Name string
+	// Metrics contains the Prometheus metrics to export. Use NewMetrics() to create them and registered them with a Prometheus registry. If nil, no metrics are exported.
+	Metrics *Metrics
+	// Logger specifies the logger to log every state change (at debug level).  If nil, state changes aren't logged.
+	Logger *slog.Logger
 }
 
 // ErrCircuitOpen is the error returned by CircuitBreaker.Do when the circuit is open.
@@ -71,7 +68,8 @@ func New(configuration Configuration) *CircuitBreaker {
 	return &CircuitBreaker{
 		configuration: configuration,
 		throttle:      make(chan struct{}, configuration.HalfOpenThrottle),
-		metrics:       newMetrics(configuration.Namespace, configuration.Subsystem, configuration.Name, nil),
+		metrics:       configuration.Metrics,
+		logger:        configuration.Logger,
 	}
 }
 
@@ -137,6 +135,7 @@ func (c *CircuitBreaker) onSuccess() {
 	if c.state == StateHalfOpen && c.configuration.ShouldClose(c.counters) {
 		c.close()
 	}
+	c.metrics.onCounterChange(c.counters)
 }
 
 func (c *CircuitBreaker) onError() {
@@ -147,6 +146,7 @@ func (c *CircuitBreaker) onError() {
 	if c.state == StateHalfOpen || c.configuration.ShouldOpen(c.counters) {
 		c.open()
 	}
+	c.metrics.onCounterChange(c.counters)
 }
 
 func (c *CircuitBreaker) open() {
@@ -164,19 +164,7 @@ func (c *CircuitBreaker) close() {
 func (c *CircuitBreaker) setState(state State) {
 	c.state = state
 	c.counters.reset()
-}
-
-func (c *CircuitBreaker) Describe(ch chan<- *prometheus.Desc) {
-	for _, desc := range c.metrics {
-		ch <- desc
-	}
-}
-
-func (c *CircuitBreaker) Collect(ch chan<- prometheus.Metric) {
-	counters := c.GetCounters()
-	ch <- prometheus.MustNewConstMetric(c.metrics[stateMetric], prometheus.GaugeValue, float64(c.getState()))
-	ch <- prometheus.MustNewConstMetric(c.metrics[consecutiveSuccessesMetric], prometheus.GaugeValue, float64(counters.ConsecutiveSuccesses))
-	ch <- prometheus.MustNewConstMetric(c.metrics[consecutiveErrorsMetric], prometheus.GaugeValue, float64(counters.ConsecutiveErrors))
+	c.metrics.onStateChange(state)
 }
 
 // State of the circuit breaker.
@@ -242,41 +230,4 @@ func (c *Counters) reset() {
 	c.ConsecutiveSuccesses = 0
 	c.Errors = 0
 	c.ConsecutiveErrors = 0
-}
-
-const (
-	stateMetric                = "state"
-	consecutiveSuccessesMetric = "consecutive_successes"
-	consecutiveErrorsMetric    = "consecutive_errors"
-)
-
-type metrics map[string]*prometheus.Desc
-
-func newMetrics(namespace, subsystem, cbName string, constLabels map[string]string) metrics {
-	if cbName != "" {
-		if constLabels == nil {
-			constLabels = make(map[string]string)
-		}
-		constLabels["circuit_breaker"] = cbName
-	}
-	return metrics{
-		stateMetric: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, subsystem, "circuit_breaker_state"),
-			"state of the circuit breaker (0: closed, 1:open, 2:half-open)",
-			nil,
-			constLabels,
-		),
-		consecutiveSuccessesMetric: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, subsystem, "circuit_breaker_consecutive_successes"),
-			"consecutive successes",
-			nil,
-			constLabels,
-		),
-		consecutiveErrorsMetric: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, subsystem, "circuit_breaker_consecutive_errors"),
-			"consecutive errors",
-			nil,
-			constLabels,
-		),
-	}
 }
