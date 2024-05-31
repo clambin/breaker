@@ -25,8 +25,6 @@ type CircuitBreaker struct {
 	state              State
 	openExpiration     time.Time
 	halfOpenExpiration time.Time
-	metrics            *Metrics
-	logger             *slog.Logger
 }
 
 // Configuration for the circuit breaker.
@@ -65,11 +63,13 @@ func New(configuration Configuration) *CircuitBreaker {
 	if configuration.OpenDuration == 0 {
 		configuration.OpenDuration = 10 * time.Second
 	}
+	var throttle chan struct{}
+	if configuration.HalfOpenThrottle > 0 {
+		throttle = make(chan struct{}, configuration.HalfOpenThrottle)
+	}
 	return &CircuitBreaker{
 		configuration: configuration,
-		throttle:      make(chan struct{}, configuration.HalfOpenThrottle),
-		metrics:       configuration.Metrics,
-		logger:        configuration.Logger,
+		throttle:      throttle,
 	}
 }
 
@@ -104,7 +104,7 @@ func (c *CircuitBreaker) Do(f func() error) error {
 		return ErrCircuitOpen
 	}
 
-	if state == StateHalfOpen && c.configuration.HalfOpenThrottle > 0 {
+	if state == StateHalfOpen && c.throttle != nil {
 		// simple semaphore implementation to throttle requests while half-open
 		c.throttle <- struct{}{}
 		defer func() { <-c.throttle }()
@@ -135,7 +135,7 @@ func (c *CircuitBreaker) onSuccess() {
 	if c.state == StateHalfOpen && c.configuration.ShouldClose(c.counters) {
 		c.close()
 	}
-	c.metrics.onCounterChange(c.counters)
+	c.configuration.Metrics.onCounterChange(c.counters)
 }
 
 func (c *CircuitBreaker) onError() {
@@ -146,7 +146,7 @@ func (c *CircuitBreaker) onError() {
 	if c.state == StateHalfOpen || c.configuration.ShouldOpen(c.counters) {
 		c.open()
 	}
-	c.metrics.onCounterChange(c.counters)
+	c.configuration.Metrics.onCounterChange(c.counters)
 }
 
 func (c *CircuitBreaker) open() {
@@ -164,9 +164,9 @@ func (c *CircuitBreaker) close() {
 func (c *CircuitBreaker) setState(state State) {
 	c.state = state
 	c.counters.reset()
-	c.metrics.onStateChange(state)
-	if c.logger != nil {
-		c.logger.Debug("state change detected", "state", c.state)
+	c.configuration.Metrics.onStateChange(state)
+	if c.configuration.Logger != nil {
+		c.configuration.Logger.Debug("state change detected", "state", c.state)
 	}
 }
 
