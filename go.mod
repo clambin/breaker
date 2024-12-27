@@ -7,7 +7,7 @@ toolchain go1.22.3
 require (
 	github.com/clambin/go-common/testutils v0.2.0
 	github.com/prometheus/client_golang v1.20.5
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 )
 
 require (
