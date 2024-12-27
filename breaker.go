@@ -1,5 +1,5 @@
 /*
-Package breaker implements the circuit breaker design pattern.
+Package breaker implements an observable circuit breaker.
 
 A circuit breaker stops requests if a service is not working. It has three states:
 
