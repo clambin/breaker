@@ -3,9 +3,9 @@ package breaker
 import (
 	"errors"
 	"fmt"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"log/slog"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,8 +34,10 @@ func TestCircuitBreaker_Do(t *testing.T) {
 	t.Run("closed cb remains closed on success", func(t *testing.T) {
 		t.Parallel()
 		cb := newCB(StateClosed)
-		assert.NoError(t, cb.Do(func() error { return nil }))
-		assert.Equal(t, StateClosed, cb.GetState())
+		_ = cb.Do(func() error { return nil })
+		if got := cb.GetState(); got != StateClosed {
+			t.Errorf("state should be closed; got %v", got)
+		}
 	})
 
 	t.Run("closed cb closes after ErrorThreshold errors", func(t *testing.T) {
@@ -43,20 +45,24 @@ func TestCircuitBreaker_Do(t *testing.T) {
 		cb := newCB(StateClosed)
 		var calls int
 		for cb.GetState() == StateClosed {
-			assert.Error(t, cb.Do(func() error { return errors.New("error") }))
+			_ = cb.Do(func() error { return errors.New("error") })
 			calls++
 		}
-		assert.Equal(t, cfg.ErrorThreshold, calls)
+		if calls != cfg.ErrorThreshold {
+			t.Errorf("calls should be %v; got %v", cfg.ErrorThreshold, calls)
+		}
 	})
 
 	t.Run("closed cb only closes after ErrorThreshold consecutive errors", func(t *testing.T) {
 		t.Parallel()
 		cb := newCB(StateClosed)
 		for range cfg.ErrorThreshold {
-			assert.Error(t, cb.Do(func() error { return errors.New("error") }))
-			assert.NoError(t, cb.Do(func() error { return nil }))
+			_ = cb.Do(func() error { return errors.New("error") })
+			_ = cb.Do(func() error { return nil })
 		}
-		assert.Equal(t, StateClosed, cb.GetState())
+		if got := cb.GetState(); got != StateClosed {
+			t.Errorf("state should be closed; got %v", got)
+		}
 	})
 
 	t.Run("open cb doesn't perform the call", func(t *testing.T) {
@@ -69,9 +75,13 @@ func TestCircuitBreaker_Do(t *testing.T) {
 				calls++
 				return nil
 			})
-			assert.ErrorIs(t, err, ErrCircuitOpen)
+			if !errors.Is(err, ErrCircuitOpen) {
+				t.Errorf("error should be ErrCircuitOpen; got %v", err)
+			}
 		}
-		assert.Zero(t, calls)
+		if calls != 0 {
+			t.Errorf("calls should be 0; got %v", calls)
+		}
 	})
 
 	t.Run("open cb goes half-open after OpenDuration", func(t *testing.T) {
@@ -81,14 +91,18 @@ func TestCircuitBreaker_Do(t *testing.T) {
 		for cb.GetState() == StateOpen {
 			time.Sleep(100 * time.Millisecond)
 		}
-		assert.GreaterOrEqual(t, time.Since(start), cfg.OpenDuration)
+		if got := time.Since(start); got < cfg.OpenDuration {
+			t.Errorf("circuit breaker closed too soon; want: %v, got %v", cfg.OpenDuration, got)
+		}
 	})
 
 	t.Run("half-open cb opens on error", func(t *testing.T) {
 		t.Parallel()
 		cb := newCB(StateHalfOpen)
-		assert.Error(t, cb.Do(func() error { return errors.New("error") }))
-		assert.Equal(t, StateOpen.String(), cb.GetState().String())
+		_ = cb.Do(func() error { return errors.New("error") })
+		if got := cb.GetState(); got != StateOpen {
+			t.Errorf("state should be open; got %v", got)
+		}
 	})
 
 	t.Run("half-open cb closes after SuccessThreshold successes", func(t *testing.T) {
@@ -96,11 +110,15 @@ func TestCircuitBreaker_Do(t *testing.T) {
 		cb := newCB(StateHalfOpen)
 		var calls int
 		for cb.GetState() == StateHalfOpen {
-			assert.NoError(t, cb.Do(func() error { return nil }))
+			_ = cb.Do(func() error { return nil })
 			calls++
 		}
-		assert.Equal(t, StateClosed, cb.GetState())
-		assert.Equal(t, cfg.SuccessThreshold, calls)
+		if got := cb.GetState(); got != StateClosed {
+			t.Errorf("state should be closed; got %v", got)
+		}
+		if calls != cfg.SuccessThreshold {
+			t.Errorf("calls should be %v; got %v", cfg.SuccessThreshold, calls)
+		}
 	})
 }
 
@@ -113,7 +131,10 @@ func TestCircuitBreaker_Do_Throttled(t *testing.T) {
 	}
 	cb := New(cfg)
 	_ = cb.Do(func() error { return errors.New("error") })
-	assert.Eventually(t, func() bool { return cb.GetState() == StateHalfOpen }, time.Second, 100*time.Millisecond)
+	if err := waitFor(func() bool { return cb.GetState() == StateHalfOpen }, time.Second, 100*time.Millisecond); err != nil {
+		t.Fatalf("wait for half-open state failed: %v", err)
+
+	}
 
 	var wg sync.WaitGroup
 	var maxCalls atomic.Int32
@@ -136,7 +157,9 @@ func TestCircuitBreaker_Do_Throttled(t *testing.T) {
 	}
 
 	wg.Wait()
-	assert.Equal(t, int32(cfg.HalfOpenThrottle), maxCalls.Load())
+	if calls := int(maxCalls.Load()); calls != cfg.HalfOpenThrottle {
+		t.Errorf("maxCalls should be %v; got %v", cfg.HalfOpenThrottle, calls)
+	}
 }
 
 func TestCircuitBreaker_Do_Custom(t *testing.T) {
@@ -148,14 +171,26 @@ func TestCircuitBreaker_Do_Custom(t *testing.T) {
 		ShouldClose:      func(_ Counters) bool { return true },
 	}
 	cb := New(cfg)
-	assert.Equal(t, StateClosed.String(), cb.GetState().String())
-	_ = cb.Do(func() error { return errors.New("error") })
+	if got := cb.GetState(); got != StateClosed {
+		t.Errorf("state should be closed; got %v", got)
+	}
+
 	// custom ShouldOpen ignores ErrorThreshold: circuit opens on first error
-	assert.Equal(t, StateOpen.String(), cb.GetState().String())
-	assert.Eventually(t, func() bool { return cb.GetState() == StateHalfOpen }, time.Second, 50*time.Millisecond)
-	_ = cb.Do(func() error { return nil })
+	_ = cb.Do(func() error { return errors.New("error") })
+	if got := cb.GetState(); got != StateOpen {
+		t.Errorf("state should be open; got %v", got)
+	}
+
+	// circuit should half-open after OpenDuration interval
+	if err := waitFor(func() bool { return cb.GetState() == StateHalfOpen }, time.Second, 100*time.Millisecond); err != nil {
+		t.Fatalf("wait for half-open state failed: %v", err)
+	}
+
 	// custom ShouldClose ignores SuccessThreshold: circuit closes on first success
-	assert.Equal(t, StateClosed.String(), cb.GetState().String())
+	_ = cb.Do(func() error { return nil })
+	if got := cb.GetState(); got != StateClosed {
+		t.Errorf("state should be closed; got %v", got)
+	}
 }
 
 func TestCircuitBreaker_GetCounters(t *testing.T) {
@@ -167,17 +202,31 @@ func TestCircuitBreaker_GetCounters(t *testing.T) {
 	})
 
 	_ = cb.Do(func() error { return nil })
-	assert.Equal(t, Counters{Calls: 1, Successes: 1, ConsecutiveSuccesses: 1}, cb.GetCounters())
+	want := Counters{Calls: 1, Successes: 1, ConsecutiveSuccesses: 1}
+	if got := cb.GetCounters(); !reflect.DeepEqual(got, want) {
+		t.Errorf("GetCounters(): got %v; want %v", got, want)
+	}
 
 	_ = cb.Do(func() error { return errors.New("error") })
-	assert.Equal(t, Counters{}, cb.GetCounters())
+	want = Counters{}
+	if got := cb.GetCounters(); !reflect.DeepEqual(got, want) {
+		t.Errorf("GetCounters(): got %v; want %v", got, want)
+	}
 
-	assert.Eventually(t, func() bool { return cb.GetState() == StateHalfOpen }, time.Second, 100*time.Millisecond)
-	assert.Equal(t, Counters{}, cb.GetCounters())
+	if err := waitFor(func() bool { return cb.GetState() == StateHalfOpen }, time.Second, 100*time.Millisecond); err != nil {
+		t.Fatalf("wait for half-open state failed: %v", err)
+	}
+	want = Counters{}
+	if got := cb.GetCounters(); !reflect.DeepEqual(got, want) {
+		t.Errorf("GetCounters(): got %v; want %v", got, want)
+	}
 
 	_ = cb.Do(func() error { return nil })
 	_ = cb.Do(func() error { return nil })
-	assert.Equal(t, Counters{Calls: 1, Successes: 1, ConsecutiveSuccesses: 1}, cb.GetCounters())
+	want = Counters{Calls: 1, Successes: 1, ConsecutiveSuccesses: 1}
+	if got := cb.GetCounters(); !reflect.DeepEqual(got, want) {
+		t.Errorf("GetCounters(): got %v; want %v", got, want)
+	}
 }
 
 func BenchmarkCircuitBreaker_Do(b *testing.B) {
@@ -188,6 +237,7 @@ func BenchmarkCircuitBreaker_Do(b *testing.B) {
 	})
 
 	b.Run("success", func(b *testing.B) {
+		b.ReportAllocs()
 		for range b.N {
 			_ = cb.Do(func() error {
 				return nil
@@ -195,6 +245,7 @@ func BenchmarkCircuitBreaker_Do(b *testing.B) {
 		}
 	})
 	b.Run("error", func(b *testing.B) {
+		b.ReportAllocs()
 		for range b.N {
 			_ = cb.Do(func() error {
 				return errors.New("error")
@@ -247,7 +298,36 @@ func TestState_String(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.s.String())
+			if got := tt.s.String(); got != tt.want {
+				t.Errorf("String() = %v, want %v", got, tt.want)
+			}
 		})
+	}
+}
+
+func waitFor(condition func() bool, timeout, interval time.Duration) error {
+	ch := make(chan bool, 1)
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for tickCh := ticker.C; ; {
+		select {
+		case <-timer.C:
+			return errors.New("timeout")
+		case <-tickCh:
+			// don't run multiple tests in parallel
+			tickCh = nil
+			go func() { ch <- condition() }()
+		case v := <-ch:
+			if v {
+				return nil
+			}
+			// start testing again
+			tickCh = ticker.C
+		}
 	}
 }
