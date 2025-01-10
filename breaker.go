@@ -43,7 +43,7 @@ type Configuration struct {
 	ShouldOpen func(Counters) bool
 	// ShouldClose overrides when a circuit breaker opens. If nil, the circuit breaker closes after SuccessThreshold consecutive successful calls.
 	ShouldClose func(Counters) bool
-	// Metrics contains the Prometheus metrics to export. Use NewMetrics() to create them and registered them with a Prometheus registry. If nil, no metrics are exported.
+	// Metrics contains the Prometheus metrics to export. Use NewMetrics() to create them and register them with a Prometheus registry. If nil, no metrics are exported.
 	Metrics *Metrics
 	// Logger specifies the logger to log every state change (at debug level).  If nil, state changes aren't logged.
 	Logger *slog.Logger
@@ -135,7 +135,9 @@ func (c *CircuitBreaker) onSuccess() {
 	if c.state == StateHalfOpen && c.configuration.ShouldClose(c.counters) {
 		c.close()
 	}
-	c.configuration.Metrics.onCounterChange(c.counters)
+	if c.configuration.Metrics != nil {
+		c.configuration.Metrics.onCounterChange(c.counters)
+	}
 }
 
 func (c *CircuitBreaker) onError() {
@@ -146,7 +148,9 @@ func (c *CircuitBreaker) onError() {
 	if c.state == StateHalfOpen || c.configuration.ShouldOpen(c.counters) {
 		c.open()
 	}
-	c.configuration.Metrics.onCounterChange(c.counters)
+	if c.configuration.Metrics != nil {
+		c.configuration.Metrics.onCounterChange(c.counters)
+	}
 }
 
 func (c *CircuitBreaker) open() {
@@ -164,7 +168,9 @@ func (c *CircuitBreaker) close() {
 func (c *CircuitBreaker) setState(state State) {
 	c.state = state
 	c.counters.reset()
-	c.configuration.Metrics.onStateChange(state)
+	if c.configuration.Metrics != nil {
+		c.configuration.Metrics.onStateChange(state)
+	}
 	if c.configuration.Logger != nil {
 		c.configuration.Logger.Debug("state change detected", "state", c.state)
 	}
@@ -199,7 +205,7 @@ func (s State) String() string {
 // Counters holds the statistics of the performed calls.
 // It is passed to Configuration.ShouldOpen and Configuration.ShouldClose and can be used to implement custom behaviour to open and close a circuit breaker.
 //
-// CircuitBreaker resets the counters after each state change, so the
+// CircuitBreaker resets the counters after each state change.
 type Counters struct {
 	// Calls is the number of calls performed (successfully or unsuccessfully).
 	Calls int

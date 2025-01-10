@@ -8,7 +8,7 @@ type Metrics struct {
 	consecutiveErrorsMetric    prometheus.Gauge
 }
 
-// NewMetrics returns to be used with a CircuitBreaker
+// NewMetrics returns Prometheus metrics to be used with a CircuitBreaker.
 func NewMetrics(namespace, subsystem, cbName string, constLabels prometheus.Labels) *Metrics {
 	if cbName != "" {
 		if constLabels == nil {
@@ -40,12 +40,15 @@ func NewMetrics(namespace, subsystem, cbName string, constLabels prometheus.Labe
 		}),
 	}
 }
+
+// Describe implements the prometheus.Collector interface.
 func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	m.stateMetric.Describe(ch)
 	m.consecutiveSuccessesMetric.Describe(ch)
 	m.consecutiveErrorsMetric.Describe(ch)
 }
 
+// Collect implements the prometheus.Collector interface.
 func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.stateMetric.Collect(ch)
 	m.consecutiveSuccessesMetric.Collect(ch)
@@ -53,14 +56,10 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (m *Metrics) onStateChange(state State) {
-	if m != nil {
-		m.stateMetric.Set(float64(state))
-	}
+	m.stateMetric.Set(float64(state))
 }
 
 func (m *Metrics) onCounterChange(counters Counters) {
-	if m != nil {
-		m.consecutiveSuccessesMetric.Set(float64(counters.ConsecutiveSuccesses))
-		m.consecutiveErrorsMetric.Set(float64(counters.ConsecutiveErrors))
-	}
+	m.consecutiveSuccessesMetric.Set(float64(counters.ConsecutiveSuccesses))
+	m.consecutiveErrorsMetric.Set(float64(counters.ConsecutiveErrors))
 }
