@@ -19,16 +19,24 @@ import (
 // CircuitBreaker implements the circuit breaker design pattern.
 type CircuitBreaker struct {
 	configuration      Configuration
-	throttle           chan struct{}
-	lock               sync.Mutex
-	counters           Counters
-	state              State
 	openExpiration     time.Time
 	halfOpenExpiration time.Time
+	throttle           chan struct{}
+	counters           Counters
+	state              State
+	lock               sync.Mutex
 }
 
 // Configuration for the circuit breaker.
 type Configuration struct {
+	// ShouldOpen overrides when a circuit breaker opens. If nil, the circuit breaker opens after ErrorThreshold consecutive errors.
+	ShouldOpen func(Counters) bool
+	// ShouldClose overrides when a circuit breaker opens. If nil, the circuit breaker closes after SuccessThreshold consecutive successful calls.
+	ShouldClose func(Counters) bool
+	// Metrics contains the Prometheus metrics to export. Use NewMetrics() to create them and register them with a Prometheus registry. If nil, no metrics are exported.
+	Metrics *Metrics
+	// Logger specifies the logger to log every state change (at debug level).  If nil, state changes aren't logged.
+	Logger *slog.Logger
 	// ErrorThreshold is the number of errors before the circuit breaker opens.
 	ErrorThreshold int
 	// OpenDuration is how long the circuit breaker stays open before moving to 'half-open' state. Default is 10 seconds.
@@ -39,14 +47,6 @@ type Configuration struct {
 	HalfOpenDuration time.Duration
 	// HalfOpenThrottle limits the number of parallel requests while the circuit is half-open. Default is zero (no throttling).
 	HalfOpenThrottle int
-	// ShouldOpen overrides when a circuit breaker opens. If nil, the circuit breaker opens after ErrorThreshold consecutive errors.
-	ShouldOpen func(Counters) bool
-	// ShouldClose overrides when a circuit breaker opens. If nil, the circuit breaker closes after SuccessThreshold consecutive successful calls.
-	ShouldClose func(Counters) bool
-	// Metrics contains the Prometheus metrics to export. Use NewMetrics() to create them and register them with a Prometheus registry. If nil, no metrics are exported.
-	Metrics *Metrics
-	// Logger specifies the logger to log every state change (at debug level).  If nil, state changes aren't logged.
-	Logger *slog.Logger
 }
 
 // ErrCircuitOpen is the error returned by CircuitBreaker.Do when the circuit is open.
