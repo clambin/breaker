@@ -6,4 +6,6 @@
 [![godoc](https://pkg.go.dev/badge/github.com/clambin/breaker?utm_source=godoc)](https://pkg.go.dev/github.com/clambin/breaker)
 [![license](https://img.shields.io/github/license/clambin/breaker?style=plastic)](LICENSE.md)
 
+DEPRECATED: moved to https://codeberg.org/clambin/breaker
+
 Go implementation of the circuit breaker design pattern.
